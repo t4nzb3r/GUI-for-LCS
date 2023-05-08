@@ -1,4 +1,6 @@
-# lcs-mk4
+# GUI for LCS
+
+This website was created with [Vue.js](https://vuejs.org) as part of my bachelor thesis. The application uses the [eLCS](https://github.com/ryanurbs/eLCS) Python implementation and visualizes it.
 
 ## Project setup
 ```
