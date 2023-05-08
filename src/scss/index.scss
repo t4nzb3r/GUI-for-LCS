@@ -1,0 +1,25 @@
+@import "./_background.scss";
+@import "./_button.scss";
+@import "./_display.scss";
+@import "./_font.scss";
+@import "./_header.scss";
+@import "./_height.scss";
+@import "./_margin.scss";
+@import "./_misc.scss";
+@import "./_padding.scss";
+@import "./_position.scss";
+@import "./_variables.scss";
+@import "./_width.scss";
+
+html,
+body,
+#app {
+	font-family: "yorkten-slab-normal";
+	margin: 0;
+	padding: 0;
+	height: 100vh;
+	width: 100vw;
+}
+* {
+	box-sizing: border-box;
+}

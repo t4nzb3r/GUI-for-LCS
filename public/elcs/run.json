@@ -1,0 +1,39 @@
+{
+	"classifier-set": {
+		"popSet": [
+			{
+				"specifiedAttList": [
+					0,
+					3,
+					4,
+					5
+				],
+				"condition": [
+					"0",
+					"0",
+					"1",
+					"0"
+				],
+				"phenotype": "0",
+				"fitness": 1.0,
+				"accuracy": 1.0,
+				"numerosity": 1,
+				"aveMatchSetSize": 1.0,
+				"deletionVote": null,
+				"timeStampGA": 0,
+				"initTimeStamp": 0,
+				"matchCount": 1,
+				"correctCount": 1
+			}
+		],
+		"matchSet": [],
+		"correctSet": [],
+		"microPopSize": 1,
+		"aveGenerality": 0.0,
+		"expRules": 0.0,
+		"attributeSpecList": [],
+		"attributeAccList": [],
+		"avePhenotypeRange": 0.0
+	},
+	"next-step": "pre-match-set"
+}

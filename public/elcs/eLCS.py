@@ -1,0 +1,659 @@
+"""
+Name:        lcs_cycle.py
+Authors:     Ryan Urbanowicz - Written at Dartmouth College, Hanover, NH, USA --- adapted
+Contact:     ryan.j.urbanowicz@darmouth.edu
+Created:     November 1, 2013
+Description: The major controlling module of eLCS.  Includes the major run loop which controls learning over a specified number of iterations.  Also includes
+			 periodic tracking of estimated performance, and checkpoints where complete evaluations of the eLCS rule population is performed.
+			 
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+eLCS: Educational Learning Classifier System - A basic LCS coded for educational purposes.  This LCS algorithm uses supervised learning, and thus is most 
+similar to "UCS", an LCS algorithm published by Ester Bernado-Mansilla and Josep Garrell-Guiu (2003) which in turn is based heavily on "XCS", an LCS 
+algorithm published by Stewart Wilson (1995).  
+
+Copyright (C) 2013 Ryan Urbanowicz 
+This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the 
+Free Software Foundation; either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABLILITY 
+or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, 
+Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+#Import Required Modules-------------------------------
+from Constants import *
+from ClassifierSet import ClassifierSet
+from Prediction import *
+from ClassAccuracy import ClassAccuracy
+from OutputFileManager import OutputFileManager
+import copy
+import random
+import math
+from RunExporter import RunExporter
+#------------------------------------------------------
+
+class eLCS:
+	def __init__(self):
+		""" Initializes the eLCS algorithm """
+		print("eLCS: Initializing Algorithm...")
+		#Global Parameters-------------------------------------------------------------------------------------
+		self.populationHistory = []
+		self.population = None          # The rule population (the 'solution/model' evolved by eLCS)
+		self.learnTrackOut = None       # Output file that will store tracking information during learning
+		self.stepByStepHalt = False
+		self.learningParams = {
+			"state_phenotype": None,
+			"exploreIter": 0,
+			"phenotypePrediction": None,
+			"phenotype": None
+		}
+		self.nextStep = "pre-next-cycle"
+		
+		#-------------------------------------------------------
+		# POPULATION REBOOT - Begin eLCS learning from an existing saved rule population
+		#-------------------------------------------------------
+		if cons.doPopulationReboot:
+			self.populationReboot()
+			
+		#-------------------------------------------------------
+		# NORMAL eLCS - Run eLCS from scratch on given data
+		#-------------------------------------------------------
+		else:
+			try:
+				self.learnTrackOut = open(cons.outFileName+'_LearnTrack.txt','w')
+			except Exception as inst:
+				print(type(inst))
+				print(inst.args)
+				print(inst)
+				print('cannot open', cons.outFileName+'_LearnTrack.txt')
+				raise 
+			else:  
+				self.learnTrackOut.write("Explore_Iteration\tMacroPopSize\tMicroPopSize\tAccuracy_Estimate\tAveGenerality\tExpRules\tTime(min)\n")
+			
+			# Instantiate Population---------
+			self.population = ClassifierSet()
+			self.exploreIter = 0
+			self.correct  = [0.0 for i in range(cons.trackingFrequency)]
+
+		self.populationHistory.append({ "next-step": self.nextStep, "current-step": self.nextStep, "population": self.population })
+			
+		# #Run the eLCS algorithm-------------------------------------------------------------------------------
+		# self.run_eLCS()
+
+
+	def run_eLCS(self):
+		""" Runs the initialized eLCS algorithm. """
+		#--------------------------------------------------------------
+		print("Learning Checkpoints: " +str(cons.learningCheckpoints))
+		print("Maximum Iterations: " +str(cons.maxLearningIterations))
+		print("Beginning eLCS learning iterations.")
+		print("------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+		#-------------------------------------------------------
+		# MAJOR LEARNING LOOP
+		#-------------------------------------------------------
+		while self.exploreIter < cons.maxLearningIterations: 
+			
+			#-------------------------------------------------------
+			# GET NEW INSTANCE AND RUN A LEARNING ITERATION
+			#-------------------------------------------------------
+			state_phenotype = cons.env.getTrainInstance()
+			self.runIteration2(state_phenotype, self.exploreIter)
+			
+			#-------------------------------------------------------------------------------------------------------------------------------
+			# EVALUATIONS OF ALGORITHM
+			#-------------------------------------------------------------------------------------------------------------------------------
+			cons.timer.startTimeEvaluation()
+			
+			#-------------------------------------------------------
+			# TRACK LEARNING ESTIMATES
+			#-------------------------------------------------------
+			if (self.exploreIter%cons.trackingFrequency) == (cons.trackingFrequency - 1) and self.exploreIter > 0:
+				self.population.runPopAveEval(self.exploreIter) 
+				trackedAccuracy = sum(self.correct)/float(cons.trackingFrequency) #Accuracy over the last "trackingFrequency" number of iterations.
+				self.learnTrackOut.write(self.population.getPopTrack(trackedAccuracy, self.exploreIter+1,cons.trackingFrequency)) #Report learning progress to standard out and tracking file.
+			cons.timer.stopTimeEvaluation()
+			
+			#-------------------------------------------------------
+			# CHECKPOINT - COMPLETE EVALUTATION OF POPULATION - strategy different for discrete vs continuous phenotypes
+			#-------------------------------------------------------
+			if (self.exploreIter + 1) in cons.learningCheckpoints:
+				cons.timer.startTimeEvaluation()
+				print("------------------------------------------------------------------------------------------------------------------------------------------------------")
+				print("Running Population Evaluation after " + str(self.exploreIter + 1)+ " iterations.")
+				
+				self.population.runPopAveEval(self.exploreIter)
+				self.population.runAttGeneralitySum(True)
+				cons.env.startEvaluationMode()  #Preserves learning position in training data
+				if cons.testFile != 'None': #If a testing file is available.
+					if cons.env.formatData.discretePhenotype: 
+						trainEval = self.doPopEvaluation(True)
+						testEval = self.doPopEvaluation(False)
+					else: 
+						trainEval = self.doContPopEvaluation(True)
+						testEval = self.doContPopEvaluation(False)
+				else:  #Only a training file is available
+					if cons.env.formatData.discretePhenotype: 
+						trainEval = self.doPopEvaluation(True)
+						testEval = None
+					else: 
+						trainEval = self.doContPopEvaluation(True)
+						testEval = None
+
+				cons.env.stopEvaluationMode() #Returns to learning position in training data
+				cons.timer.stopTimeEvaluation()
+				cons.timer.returnGlobalTimer() 
+					
+				#Write output files----------------------------------------------------------------------------------------------------------
+				OutputFileManager().writePopStats(cons.outFileName, trainEval, testEval, self.exploreIter + 1, self.population, self.correct)
+				OutputFileManager().writePop(cons.outFileName, self.exploreIter + 1, self.population)
+				#----------------------------------------------------------------------------------------------------------------------------
+
+				print("Continue Learning...")
+				print("------------------------------------------------------------------------------------------------------------------------------------------------------")
+			
+			#-------------------------------------------------------
+			# ADJUST MAJOR VALUES FOR NEXT ITERATION
+			#-------------------------------------------------------
+			self.exploreIter += 1       # Increment current learning iteration
+			cons.env.newInstance(True)  # Step to next instance in training set
+			break
+
+		# Once eLCS has reached the last learning iteration, close the tracking file 
+		self.learnTrackOut.close()
+		print("eLCS Run Complete")
+		
+	def runOneCycle(self):
+		if self.nextStep == "pre-next-cycle":
+			self.runMethod()
+		while self.nextStep != "pre-next-cycle":
+			self.runMethod()
+
+	def stepByStep(self, s):
+		steps = {
+			"match": {
+				"title": "Matching"
+			},
+			"prediction": {
+				"title": "Prediction"
+			},
+			"prediction not possible": {
+				"title": "Prediction not possible"
+			},
+			"discrete prediction": {
+				"title": "Instead: Discrete phenotype prediction"
+			},
+			"continuous prediction": {
+				"title": "Instead: Continuous phenotype prediction"
+			},
+			"correct set": {
+				"title": "Correct set"
+			},
+			"update params": {
+				"title": "Update parameter"
+			},
+			"subsumption": {
+				"title": "Subsumption"
+			},
+			"ga": {
+				"title": "Genetic algorithm"
+			},
+			"deletion": {
+				"title": "Deletion"
+			},
+		}
+
+		if self.stepByStepHalt:
+			input("{} (Application is in step-by-step halt mode. Press enter to get to the next step.)"
+				.format(steps[s]["title"]))
+
+	def runIteration(self, state_phenotype, exploreIter):
+		""" Run a single eLCS learning iteration. """
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# FORM A MATCH SET - includes covering
+		#------------------------------------
+		#-----------------------------------------------------------------------------------------------------
+		self.lcsFormMatchSet(state_phenotype, exploreIter)
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# MAKE A PREDICTION - utilized here for tracking estimated learning progress.  Typically used in the explore phase of many LCS algorithms.
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# NOT AVAILABLE ATM
+		# cons.timer.startTimeEvaluation() 
+		phenotypePrediction = self.lcsMakePrediction()
+		#-------------------------------------------------------
+		# PREDICTION NOT POSSIBLE
+		#-------------------------------------------------------
+		if phenotypePrediction == None or phenotypePrediction == 'Tie':
+			phenotypePrediction = self.lcsPredictionNotPossible()
+		else: #Prediction Successful
+			#-------------------------------------------------------
+			# DISCRETE PHENOTYPE PREDICTION
+			#-------------------------------------------------------
+			if cons.env.formatData.discretePhenotype:
+				self.lcsDiscretePhenotypePrediction(phenotypePrediction, state_phenotype[1], exploreIter)
+
+			#-------------------------------------------------------
+			# CONTINUOUS PHENOTYPE PREDICTION
+			#-------------------------------------------------------
+			else:
+				self.lcsContinuousPhenotypePrediction(phenotypePrediction, state_phenotype[1], exploreIter)
+
+		# NOT AVAILABLE ATM
+		# cons.timer.stopTimeEvaluation()
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# FORM A CORRECT SET
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.lcsFormCorrectSet(state_phenotype[1])
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# UPDATE PARAMETERS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.lcsUpdateParameters(exploreIter)
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SUBSUMPTION - APPLIED TO CORRECT SET - A heuristic for addition additional generalization pressure to eLCS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.lcsSubsumption()
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# RUN THE GENETIC ALGORITHM - Discover new offspring rules from a selected pair of parents
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.lcsGA(exploreIter, state_phenotype[0], state_phenotype[1])
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SELECT RULES FOR DELETION - This is done whenever there are more rules in the population than 'N', the maximum population size.
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.lcsDeletion(exploreIter)
+
+	def runIteration2(self, state_phenotype, exploreIter):
+		""" Run a single eLCS learning iteration. """
+
+		# self.learningParams["state_phenotype"] = state_phenotype
+		# self.learningParams["exploreIter"] = exploreIter
+		self.runMethod("pre-next-cycle")
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# FORM A MATCH SET - includes covering
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-match-set")
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# MAKE A PREDICTION - utilized here for tracking estimated learning progress.  Typically used in the explore phase of many LCS algorithms.
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# NOT AVAILABLE ATM
+		# cons.timer.startTimeEvaluation()
+		self.runMethod("pre-make-prediction")
+
+		#-------------------------------------------------------
+		# PREDICTION NOT POSSIBLE
+		#-------------------------------------------------------
+		self.runMethod("pre-prediction-possible?")
+
+		# NOT AVAILABLE ATM
+		# cons.timer.stopTimeEvaluation()
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# FORM A CORRECT SET
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-form-correct-set")
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# UPDATE PARAMETERS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-update-params")
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SUBSUMPTION - APPLIED TO CORRECT SET - A heuristic for addition additional generalization pressure to eLCS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-subsumption")
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# RUN THE GENETIC ALGORITHM - Discover new offspring rules from a selected pair of parents
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-ga")
+
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SELECT RULES FOR DELETION - This is done whenever there are more rules in the population than 'N', the maximum population size.
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.runMethod("pre-deletion")
+
+	def runMethod(self, learningCyclePosition=""):
+		if learningCyclePosition == "pre-next-cycle":
+			self.lcsInitNextCycle()
+			self.nextStep = "pre-match-set"
+		elif learningCyclePosition == "pre-match-set":
+			self.lcsFormMatchSet(self.learningParams["state_phenotype"], self.learningParams["exploreIter"])
+			self.nextStep = "pre-make-prediction"
+		elif learningCyclePosition == "pre-make-prediction":
+			self.learningParams["phenotypePrediction"] = self.lcsMakePrediction()
+			self.nextStep = "pre-prediction-possible?"
+		elif learningCyclePosition == "pre-prediction-possible?":
+			if self.learningParams["phenotypePrediction"] == None or self.learningParams["phenotypePrediction"] == 'Tie':
+				self.runMethod("pre-prediction-not-possible")
+			else: #Prediction Successful
+				# Discrete Phenotype Prediction
+				if cons.env.formatData.discretePhenotype:
+					self.runMethod("pre-discrete-phenotype-prediction")
+		elif learningCyclePosition == "pre-prediction-not-possible":
+			self.learningParams["phenotypePrediction"] = self.lcsPredictionNotPossible()
+			self.nextStep = "pre-form-correct-set"
+		elif learningCyclePosition == "pre-discrete-phenotype-prediction":
+			self.lcsDiscretePhenotypePrediction(
+				self.learningParams["phenotypePrediction"],
+				self.learningParams["state_phenotype"][1],
+				self.learningParams["exploreIter"]
+			)
+			self.nextStep = "pre-form-correct-set"
+		elif learningCyclePosition == "pre-form-correct-set":
+			self.lcsFormCorrectSet(self.learningParams["state_phenotype"][1])
+			self.nextStep = "pre-update-params"
+		elif learningCyclePosition == "pre-update-params":
+			self.lcsUpdateParameters(self.learningParams["exploreIter"])
+			self.nextStep = "pre-subsumption"
+		elif learningCyclePosition == "pre-subsumption":
+			self.lcsSubsumption()
+			self.nextStep = "pre-ga"
+		elif learningCyclePosition == "pre-ga":
+			self.lcsGA(
+				self.learningParams["exploreIter"],
+				self.learningParams["state_phenotype"][0],
+				self.learningParams["state_phenotype"][1]
+			)
+			self.nextStep = "pre-deletion"
+		elif learningCyclePosition == "pre-deletion":
+			self.lcsDeletion(self.learningParams["exploreIter"])
+			self.learningParams["exploreIter"] += 1
+			cons.env.newInstance(True)
+			self.nextStep = "pre-next-cycle"
+		elif learningCyclePosition == "":
+			self.runMethod(self.nextStep)
+		
+		if(learningCyclePosition != ""):
+			self.populationHistory.append({
+				"current-step": learningCyclePosition,
+				"next-step": self.nextStep,
+				"population": self.population
+			})
+
+	def lcsInitNextCycle(self):
+		self.learningParams["state_phenotype"] = cons.env.getTrainInstance()
+
+	def lcsFormMatchSet(self, state_phenotype, exploreIter):
+		self.population.makeMatchSet(state_phenotype, exploreIter)
+		self.stepByStep("match")
+
+	def lcsMakePrediction(self):
+		prediction = Prediction(self.population)
+		phenotypePrediction = prediction.getDecision()
+		self.stepByStep("prediction")
+		return phenotypePrediction
+
+	def lcsPredictionNotPossible(self):
+		phenotypePrediction = None
+		if cons.env.formatData.discretePhenotype:
+			phenotypePrediction = random.choice(cons.env.formatData.phenotypeList)
+		else:
+			phenotypePrediction = random.randrange(cons.env.formatData.phenotypeList[0], cons.env.formatData.phenotypeList[1], (cons.env.formatData.phenotypeList[1] - cons.env.formatData.phenotypeList[0]) / float(1000))
+		self.stepByStep("prediction not possible")
+		return phenotypePrediction	
+
+	def lcsDiscretePhenotypePrediction(self, phenotypePrediction, phenotype, exploreIter):
+			if phenotypePrediction == phenotype:
+				self.correct[exploreIter%cons.trackingFrequency] = 1
+			else:
+				self.correct[exploreIter%cons.trackingFrequency] = 0
+			self.stepByStep("discrete prediction")
+
+	# NOT AVAILABLE ATM
+	# def lcsContinuousPhenotypePrediction(self, phenotypePrediction, phenotype, exploreIter):
+	# 	predictionError = math.fabs(phenotypePrediction - float(phenotype))
+	# 	phenotypeRange = cons.env.formatData.phenotypeList[1] - cons.env.formatData.phenotypeList[0]
+	# 	accuracyEstimate = 1.0 - (predictionError / float(phenotypeRange))
+	# 	self.correct[exploreIter%cons.trackingFrequency] = accuracyEstimate
+	# 	self.stepByStep("continuous prediction")
+
+	def lcsFormCorrectSet(self, phenotype):
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# FORM A CORRECT SET
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.population.makeCorrectSet(phenotype)
+		self.stepByStep("correct set")
+
+	def lcsUpdateParameters(self, exploreIter):
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# UPDATE PARAMETERS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.population.updateSets(exploreIter)
+		self.stepByStep("update params")
+
+	def lcsSubsumption(self):
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SUBSUMPTION - APPLIED TO CORRECT SET - A heuristic for addition additional generalization pressure to eLCS
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		if cons.doSubsumption:
+			cons.timer.startTimeSubsumption()
+			self.population.doCorrectSetSubsumption()
+			cons.timer.stopTimeSubsumption()
+		self.stepByStep("subsumption")
+
+	def performSubsumption(self):
+		self.population.doCorrectSetSubsumption()
+
+
+	def lcsGA(self, exploreIter, state, phenotype):
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# RUN THE GENETIC ALGORITHM - Discover new offspring rules from a selected pair of parents
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.population.runGA(exploreIter, state, phenotype)
+		self.stepByStep("ga")
+
+	def lcsDeletion(self, exploreIter):
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		# SELECT RULES FOR DELETION - This is done whenever there are more rules in the population than 'N', the maximum population size.
+		#-----------------------------------------------------------------------------------------------------------------------------------------
+		self.population.deletion(exploreIter)
+		self.population.clearSets() #Clears the match and correct sets for the next learning iteration
+		self.stepByStep("deletion")
+
+	def importRulePopulation(self, newRules):
+		# self.population = ClassifierSet.importRulePopulation(newRules)
+		self.population.importRulePopulation(newRules)
+
+		
+	def doPopEvaluation(self, isTrain):
+		""" Performs a complete evaluation of the current rule population.  The population is unchanged throughout this evaluation. Works on both training and testing data. """
+		if isTrain:
+			myType = "TRAINING"
+		else:
+			myType = "TESTING"
+		noMatch = 0                     # How often does the population fail to have a classifier that matches an instance in the data.
+		tie = 0                         # How often can the algorithm not make a decision between classes due to a tie.
+		cons.env.resetDataRef(isTrain)  # Go to the first instance in dataset
+		phenotypeList = cons.env.formatData.phenotypeList 
+		#----------------------------------------------
+		classAccDict = {}
+		for each in phenotypeList:
+			classAccDict[each] = ClassAccuracy()
+		#----------------------------------------------
+		if isTrain:
+			instances = cons.env.formatData.numTrainInstances
+		else:
+			instances = cons.env.formatData.numTestInstances
+		#----------------------------------------------------------------------------------------------
+		for inst in range(instances):
+			if isTrain:
+				state_phenotype = cons.env.getTrainInstance()
+			else:
+				state_phenotype = cons.env.getTestInstance()
+			#-----------------------------------------------------------------------------
+			self.population.makeEvalMatchSet(state_phenotype[0])
+			prediction = Prediction(self.population)
+			phenotypeSelection = prediction.getDecision() 
+			#-----------------------------------------------------------------------------
+			
+			if phenotypeSelection == None: 
+				noMatch += 1
+			elif phenotypeSelection == 'Tie':
+				tie += 1
+			else: #Instances which failed to be covered are excluded from the accuracy calculation 
+				for each in phenotypeList:
+					thisIsMe = False
+					accuratePhenotype = False
+					truePhenotype = state_phenotype[1]
+					if each == truePhenotype:
+						thisIsMe = True 
+					if phenotypeSelection == truePhenotype:
+						accuratePhenotype = True
+					classAccDict[each].updateAccuracy(thisIsMe, accuratePhenotype)
+						
+			cons.env.newInstance(isTrain) #next instance
+			self.population.clearSets() 
+		#----------------------------------------------------------------------------------------------
+		#Calculate Standard Accuracy--------------------------------------------
+		instancesCorrectlyClassified = classAccDict[phenotypeList[0]].T_myClass + classAccDict[phenotypeList[0]].T_otherClass  
+		instancesIncorrectlyClassified = classAccDict[phenotypeList[0]].F_myClass + classAccDict[phenotypeList[0]].F_otherClass 
+		standardAccuracy = float(instancesCorrectlyClassified) / float(instancesCorrectlyClassified + instancesIncorrectlyClassified)
+
+		#Calculate Balanced Accuracy---------------------------------------------
+		T_mySum = 0
+		T_otherSum = 0
+		F_mySum = 0
+		F_otherSum = 0
+		for each in phenotypeList:
+			T_mySum += classAccDict[each].T_myClass
+			T_otherSum += classAccDict[each].T_otherClass
+			F_mySum += classAccDict[each].F_myClass
+			F_otherSum += classAccDict[each].F_otherClass
+		balancedAccuracy = ((0.5*T_mySum / (float(T_mySum + F_otherSum)) + 0.5*T_otherSum / (float(T_otherSum + F_mySum)))) # BalancedAccuracy = (Specificity + Sensitivity)/2
+
+		#Adjustment for uncovered instances - to avoid positive or negative bias we incorporate the probability of guessing a phenotype by chance (e.g. 50% if two phenotypes)
+		predictionFail = float(noMatch)/float(instances)
+		predictionTies = float(tie)/float(instances)
+		instanceCoverage = 1.0 - predictionFail
+		predictionMade = 1.0 - (predictionFail + predictionTies)
+		
+		adjustedStandardAccuracy = (standardAccuracy * predictionMade) + ((1.0 - predictionMade) * (1.0 / float(len(phenotypeList))))
+		adjustedBalancedAccuracy = (balancedAccuracy * predictionMade) + ((1.0 - predictionMade) * (1.0 / float(len(phenotypeList))))
+		
+		#Adjusted Balanced Accuracy is calculated such that instances that did not match have a consistent probability of being correctly classified in the reported accuracy.
+		print("-----------------------------------------------")
+		print(str(myType)+" Accuracy Results:-------------")
+		print("Instance Coverage = "+ str(instanceCoverage*100.0)+ '%')
+		print("Prediction Ties = "+ str(predictionTies*100.0)+ '%')
+		print(str(instancesCorrectlyClassified) + ' out of ' + str(instances) + ' instances covered and correctly classified.')
+		print("Standard Accuracy (Adjusted) = " + str(adjustedStandardAccuracy))
+		print("Balanced Accuracy (Adjusted) = " + str(adjustedBalancedAccuracy))
+		#Balanced and Standard Accuracies will only be the same when there are equal instances representative of each phenotype AND there is 100% covering.
+		resultList = [adjustedBalancedAccuracy, instanceCoverage]
+		return resultList
+		
+	
+	def doContPopEvaluation(self, isTrain):
+		""" Performs evaluation of population via the copied environment. Specifically developed for continuous phenotype evaulation.  
+		The population is maintained unchanging throughout the evaluation.  Works on both training and testing data. """
+		if isTrain:
+			myType = "TRAINING"
+		else:
+			myType = "TESTING"
+		noMatch = 0 #How often does the population fail to have a classifier that matches an instance in the data.
+		cons.env.resetDataRef(isTrain) #Go to first instance in data set
+		accuracyEstimateSum = 0
+
+		if isTrain:
+			instances = cons.env.formatData.numTrainInstances
+		else:
+			instances = cons.env.formatData.numTestInstances
+		#----------------------------------------------------------------------------------------------
+		for inst in range(instances):
+			if isTrain:
+				state_phenotype = cons.env.getTrainInstance()
+			else:
+				state_phenotype = cons.env.getTestInstance()
+			#-----------------------------------------------------------------------------
+			self.population.makeEvalMatchSet(state_phenotype[0])
+			prediction = Prediction(self.population)
+			phenotypePrediction = prediction.getDecision() 
+			#-----------------------------------------------------------------------------
+			if phenotypePrediction == None: 
+				noMatch += 1
+			else: #Instances which failed to be covered are excluded from the initial accuracy calculation
+				predictionError = math.fabs(float(phenotypePrediction) - float(state_phenotype[1]))
+				phenotypeRange = cons.env.formatData.phenotypeList[1] - cons.env.formatData.phenotypeList[0]
+				accuracyEstimateSum += 1.0 - (predictionError / float(phenotypeRange))
+						   
+			cons.env.newInstance(isTrain) #next instance
+			self.population.clearSets() 
+		#----------------------------------------------------------------------------------------------
+		#Accuracy Estimate
+		if instances == noMatch:
+			accuracyEstimate = 0
+		else:
+			accuracyEstimate = accuracyEstimateSum / float(instances - noMatch)
+		
+		#Adjustment for uncovered instances - to avoid positive or negative bias we incorporate the probability of guessing a phenotype by chance (e.g. 50% if two phenotypes)
+		instanceCoverage = 1.0 - (float(noMatch)/float(instances))
+		adjustedAccuracyEstimate = accuracyEstimateSum / float(instances) #noMatchs are treated as incorrect predictions (can see no other fair way to do this)
+
+		print("-----------------------------------------------")
+		print(str(myType)+" Accuracy Results:-------------")
+		print("Instance Coverage = "+ str(instanceCoverage*100.0)+ '%')
+		print("Estimated Prediction Accuracy (Ignore uncovered) = " + str(accuracyEstimate))
+		print("Estimated Prediction Accuracy (Penalty uncovered) = " + str(adjustedAccuracyEstimate))
+		#Balanced and Standard Accuracies will only be the same when there are equal instances representative of each phenotype AND there is 100% covering.
+		resultList = [adjustedAccuracyEstimate, instanceCoverage]  
+		return resultList
+	
+	
+	def populationReboot(self):
+		""" Manages the reformation of a previously saved eLCS classifier population. """
+		cons.timer.setTimerRestart(cons.popRebootPath) #Rebuild timer objects
+		#--------------------------------------------------------------------
+		try: #Re-open track learning file for continued tracking of progress.
+			self.learnTrackOut = open(cons.outFileName+'_LearnTrack.txt','a')
+		except Exception as inst:
+			print(type(inst))
+			print(inst.args)
+			print(inst)
+			print('cannot open', cons.outFileName+'_LearnTrack.txt')
+			raise      
+		
+		#Extract last iteration from file name---------------------------------------------
+		temp = cons.popRebootPath.split('_')
+		iterRef = len(temp)-1
+		completedIterations = int(temp[iterRef])
+		print("Rebooting rule population after " +str(completedIterations)+ " iterations.")
+		self.exploreIter = completedIterations-1
+		for i in range(len(cons.learningCheckpoints)):
+			cons.learningCheckpoints[i] += completedIterations
+		cons.maxLearningIterations += completedIterations
+
+		#Rebuild existing population from text file.--------
+		self.population = ClassifierSet(cons.popRebootPath)
+		#---------------------------------------------------
+		try: #Obtain correct track
+			f = open(cons.popRebootPath+"_PopStats.txt", 'r')
+		except Exception as inst:
+			print(type(inst))
+			print(inst.args)
+			print(inst)
+			print('cannot open', cons.popRebootPath+"_PopStats.txt")
+			raise 
+		else:
+			correctRef = 26 #File reference position
+			tempLine = None
+			for i in range(correctRef):
+				tempLine = f.readline()
+			tempList = tempLine.strip().split('\t')
+			self.correct = tempList
+			if cons.env.formatData.discretePhenotype:
+				for i in range(len(self.correct)):
+					self.correct[i] = int(self.correct[i])
+			else:
+				for i in range(len(self.correct)):
+					self.correct[i] = float(self.correct[i])
+			f.close()
+		

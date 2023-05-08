@@ -1,0 +1,66 @@
+hr {
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+.hover-default:hover {
+	cursor: default;
+}
+.hover-pointer:hover {
+	cursor: pointer;
+}
+.hover-help:hover {
+	cursor: help;
+}
+.hover_bg-black10-50:hover {
+	background-color: var(--color_black10-50);
+}
+.active-bg-black10:active {
+	background-color: var(--color_black10);
+}
+
+.shadow {
+	box-shadow: 0 4px 4px 0 rgba(0, 0, 0, 0.25);
+}
+
+.rotate-90 {
+	transform-origin: center;
+	transform: rotate(90deg);
+}
+.rotate-180 {
+	transform-origin: center;
+	transform: rotate(180deg);
+}
+.rotate-270 {
+	transform-origin: center;
+	transform: rotate(-90deg);
+}
+
+.no-border {
+	border: none;
+}
+.border-right {
+	border-right: 1px solid var(--color_black20);
+}
+.placeholder {
+	border: 2px dashed var(--color_black);
+	background: none;
+}
+
+.overflow-scroll {
+	overflow: scroll;
+}
+
+.z-index-9 {
+	z-index: 9;
+}
+.z-index-10 {
+	z-index: 10;
+}
+
+.no-select {
+	-webkit-user-select: none; /* Safari */
+	-moz-user-select: none; /* Firefox */
+	-ms-user-select: none; /* IE10+/Edge */
+	user-select: none; /* Standard */
+}
